@@ -52,6 +52,7 @@ cd .claude/skills/life-secretary && git pull
 2. 发送 `/setcommands`
 3. 选择你的 bot
 4. 粘贴以下命令列表并发送：
+
 view_schedule - 查看日程（今天/本周/指定日期）
 add_event - 添加事件（自然语言描述时间）
 detect_conflicts - 检测日程冲突和SLA违规
@@ -62,6 +63,7 @@ manage_anchor - 管理生活锚点（健身/冥想等）
 manage_tasks - 任务增删改查
 optimize_day - 优化今日任务排期
 protect_focus - 创建专注时间块
+
 > **提示**：命令菜单适合高频操作入口。发送命令后可追加参数，例如 `/add_event 明晚7点健身`；也可直接发送自然语言，效果相同。
 ---
 
