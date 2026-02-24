@@ -16,7 +16,7 @@ git clone https://github.com/ggg223399/life-secretary-nanoclaw-skill life-secret
 在 VPS 的 Claude Code 里运行：
 
 ```
-/life-secretary
+/init-life-secretary
 ```
 
 按提示操作：
@@ -276,7 +276,7 @@ COMMIT;
 
 ```
 life-secretary-nanoclaw-skill/
-├── SKILL.md                    # 部署技能（Phase-based，/life-secretary 命令）
+├── SKILL.md                    # 部署技能（Phase-based，/init-life-secretary 命令）
 ├── agent/
 │   ├── SKILL.md                # 运行时技能（16 工具操作指南）
 │   ├── CLAUDE.md               # Group 级触发路由

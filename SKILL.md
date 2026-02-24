@@ -1,5 +1,5 @@
 ---
-name: life-secretary
+name: init-life-secretary
 description: Deploy Life Secretary — personal schedule manager with SQLite storage, 16 management tools, habit tracking, and work-life balance. Creates a dedicated group with Telegram channel support.
 ---
 
