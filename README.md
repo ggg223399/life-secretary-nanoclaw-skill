@@ -25,6 +25,14 @@ git clone https://github.com/ggg223399/life-secretary-nanoclaw-skill life-secret
 
 部署完成后，agent 文件会写入 `groups/{folder}/`，数据库在首次收到消息时自动初始化。
 
+## 获取 Chat ID
+
+部署时需要提供 Telegram chat ID。获取方法：
+
+1. 在目标 Telegram 群组/聊天中向 NanoClaw bot 发送 `/chatid`
+2. Bot 会回复 chat ID，格式为 `tg:XXXXXXXXXX`
+3. 在部署提示输入 chat ID 时使用该值
+
 ## 更新
 
 ```bash
@@ -282,6 +290,7 @@ life-secretary-nanoclaw-skill/
 │   ├── CLAUDE.md               # Group 级触发路由
 │   ├── schema.sql              # SQLite 6 表结构
 │   ├── init-db.sh              # 数据库初始化 + 迁移脚本
+│   ├── sqlite3                 # Python sqlite3 wrapper（无需系统包）
 │   └── migrations/
 │       └── .gitkeep            # v1 为基线，迁移文件放这里
 │   └── plans/

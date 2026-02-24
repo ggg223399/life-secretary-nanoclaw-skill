@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+import sqlite3
+import sys
+
+if len(sys.argv) < 2:
+    print("Usage: sqlite3 <database> [SQL]")
+    sys.exit(1)
+
+db_path = sys.argv[1]
+
+# Handle --version flag
+if db_path == "--version":
+    print("3.40.1 (Python sqlite3 wrapper)")
+    sys.exit(0)
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# If SQL provided as argument
+if len(sys.argv) > 2:
+    sql = sys.argv[2]
+    try:
+        # Handle special .tables command
+        if sql == ".tables":
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+            results = cursor.fetchall()
+            for row in results:
+                print(row[0], end="  ")
+            print()
+        else:
+            cursor.execute(sql)
+            results = cursor.fetchall()
+            for row in results:
+                print("|".join(str(col) if col is not None else "" for col in row))
+        conn.commit()
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+else:
+    # Read from stdin (for piped input)
+    if not sys.stdin.isatty():
+        sql_script = sys.stdin.read()
+        try:
+            cursor.executescript(sql_script)
+            conn.commit()
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Interactive mode
+        while True:
+            try:
+                line = input()
+                if line.strip().upper() in ('EXIT', 'QUIT', '.exit', '.quit'):
+                    break
+                if line == ".tables":
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+                    results = cursor.fetchall()
+                    for row in results:
+                        print(row[0], end="  ")
+                    print()
+                else:
+                    cursor.execute(line)
+                    results = cursor.fetchall()
+                    for row in results:
+                        print("|".join(str(col) if col is not None else "" for col in row))
+                conn.commit()
+            except EOFError:
+                break
+            except Exception as e:
+                print(f"Error: {e}", file=sys.stderr)
+
+conn.close()

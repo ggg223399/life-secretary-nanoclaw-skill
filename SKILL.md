@@ -25,7 +25,7 @@ AskUserQuestion: "What should the group folder be named? (default: `life-secreta
 AskUserQuestion: "Do you already have a Telegram channel set up for this group? (yes/no)"
 
 - If `yes`:
-  AskUserQuestion: "Please provide the Telegram chat ID (example: `-1001234567890`)."
+  AskUserQuestion: "Please provide the Telegram chat ID (example: `-1001234567890`). Hint: send `/chatid` to the bot in that chat to get it."
   Save as `{chat_id}`.
 - If `no`:
   Mark `telegram_needed=true`.
@@ -47,6 +47,8 @@ cp "agent/SKILL.md" "groups/{folder}/.claude/skills/life-secretary/SKILL.md"
 cp "agent/schema.sql" "groups/{folder}/.claude/skills/life-secretary/schema.sql"
 cp "agent/init-db.sh" "groups/{folder}/.claude/skills/life-secretary/init-db.sh"
 cp "agent/plans/fitness-plan.md" "groups/{folder}/.claude/skills/life-secretary/plans/fitness-plan.md"
+cp "agent/sqlite3" "groups/{folder}/.claude/skills/life-secretary/sqlite3"
+chmod +x "groups/{folder}/.claude/skills/life-secretary/sqlite3"
 ```
 
 Handle `CLAUDE.md`:
@@ -95,11 +97,7 @@ If `telegram_needed=true`, tell user:
 - Operational skill auto-initializes DB on first user message.
 - Optional host check:
 
-```bash
-command -v sqlite3 >/dev/null 2>&1 && echo "sqlite3 found" || echo "sqlite3 not found on host (container will auto-install)"
-```
-
-No manual DB action is required during deployment.
+No manual DB action is required during deployment. The bundled Python sqlite3 wrapper is used automatically.
 
 ## Phase 5: Record & Verify
 
@@ -119,6 +117,7 @@ Verification checklist:
 - [ ] `groups/{folder}/.claude/skills/life-secretary/SKILL.md` exists
 - [ ] `groups/{folder}/.claude/skills/life-secretary/schema.sql` exists
 - [ ] `groups/{folder}/.claude/skills/life-secretary/init-db.sh` exists and is executable
+- [ ] `groups/{folder}/.claude/skills/life-secretary/sqlite3` exists and is executable
 - [ ] `groups/{folder}/.claude/skills/life-secretary/plans/fitness-plan.md` exists
 
 Final message to user:
@@ -127,7 +126,7 @@ Final message to user:
 
 ## Troubleshooting
 
-- If agent says `sqlite3 not found`: it should auto-install; ensure container has internet access.
+- If agent says `sqlite3 not found`: the bundled Python wrapper should be used automatically; ensure `agent/sqlite3` was copied during deployment.
 - If DB is not initialized, run inside container:
 
 ```bash

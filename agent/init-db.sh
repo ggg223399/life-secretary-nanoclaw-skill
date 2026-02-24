@@ -13,7 +13,7 @@ LATEST_VERSION=1
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-db() { sqlite3 "$DB_PATH" "$@"; }
+db() { "$SCRIPT_DIR/sqlite3" "$DB_PATH" "$@"; }
 
 has_settings_table() {
   db "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings';" 2>/dev/null || echo "0"
