@@ -31,7 +31,7 @@ git clone https://github.com/ggg223399/life-secretary-nanoclaw-skill life-secret
 cd .claude/skills/life-secretary && git pull
 ```
 
-然后重新运行 `/life-secretary` 覆盖部署。
+然后重新发送任意消息，agent 会自动检测版本并执行迁移（数据完整保留）。
 
 ---
 
@@ -59,7 +59,7 @@ cd .claude/skills/life-secretary && git pull
 今天上午10点到12点写报告
 ```
 
-自动解析自然语言时间，创建成功后回显标题和起止时间。
+自动解析自然语言时间，创建成功后回显标题与起止时间。
 
 #### 3. delete_event — 删除事件
 
@@ -190,7 +190,7 @@ A/B/C 三档对应状态好/一般/差时的执行版本，保证习惯不断档
 
 ```
 把写周报安排到明天上午10点
-给任务自动排期
+给这个任务自动排期
 ```
 
 手动指定时间或自动寻找空档，排期后任务状态变为 `scheduled`，同时在 events 表创建对应事件。
@@ -201,8 +201,6 @@ A/B/C 三档对应状态好/一般/差时的执行版本，保证习惯不断档
 这个任务优先级2，要多久
 估算「整理需求文档」的时间
 ```
-
-按优先级返回建议时长：
 
 | 优先级 | 建议时长 |
 |--------|----------|
@@ -252,6 +250,28 @@ A/B/C 三档对应状态好/一般/差时的执行版本，保证习惯不断档
 
 ---
 
+## 数据安全 & 迁移
+
+- **数据库路径**：`/workspace/group/life-secretary.db`（容器内），对应宿主机 `groups/{folder}/life-secretary.db`
+- **re-deploy 数据保留**：数据库文件不在部署覆盖范围内，re-deploy 只更新 skill 文件
+- **schema 升级**：`init-db.sh` 每次运行时检查 `schema_version`
+  - 已是最新版本 → 直接退出，零开销
+  - 需要升级 → 自动备份（`life-secretary.db.bak-vN`）→ 顺序执行 `migrations/00N.sql` → 更新版本号
+- **迁移文件**：`agent/migrations/` 目录，当前为空（v1 是基线）
+- **添加迁移**：新增 `migrations/002.sql`，更新 `init-db.sh` 中的 `LATEST_VERSION=2`
+
+### 迁移文件格式
+
+```sql
+-- migrations/002.sql
+BEGIN TRANSACTION;
+ALTER TABLE events ADD COLUMN tags TEXT;
+ALTER TABLE tasks ADD COLUMN tags TEXT;
+COMMIT;
+```
+
+---
+
 ## 仓库结构
 
 ```
@@ -261,20 +281,15 @@ life-secretary-nanoclaw-skill/
 │   ├── SKILL.md                # 运行时技能（16 工具操作指南）
 │   ├── CLAUDE.md               # Group 级触发路由
 │   ├── schema.sql              # SQLite 6 表结构
-│   ├── init-db.sh              # 数据库初始化脚本
+│   ├── init-db.sh              # 数据库初始化 + 迁移脚本
+│   └── migrations/
+│       └── .gitkeep            # v1 为基线，迁移文件放这里
 │   └── plans/
 │       └── fitness-plan.md     # 内置健身计划参考
 ├── tests/
-│   └── test_sql.py             # SQL 逻辑测试（75 checks）
+│   └── test_sql.py             # SQL 逻辑 + 迁移测试（108 checks）
 └── README.md
 ```
-
-## 数据存储
-
-- 数据库路径：`/workspace/group/life-secretary.db`（容器内）
-- 对应宿主机：`groups/{folder}/life-secretary.db`
-- 6 张表：`anchors` / `body_status` / `events` / `habit_logs` / `settings` / `tasks`
-- 首次收到消息时自动初始化（自动安装 sqlite3 + 建表）
 
 ## License
 

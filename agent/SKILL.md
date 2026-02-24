@@ -16,15 +16,16 @@ description: 个人日程管家 - 通过自然语言管理日程、任务、生�
 
 ## 自动初始化
 
-首次响应任何工具请求前，先执行以下检查流程（按顺序）：
+每次响应任何工具请求前，先执行以下检查流程（按顺序）：
 
 1. 检查是否可用 `sqlite3` 命令。
 2. 如果 `sqlite3` 不存在，先执行：`apt-get update -qq && apt-get install -y sqlite3 -qq`。
-3. 使用以下命令检查数据库是否存在且可读：
-   `sqlite3 /workspace/group/life-secretary.db ".tables" 2>/dev/null`
-4. 如果数据库文件缺失，或 `.tables` 结果为空（未初始化），执行：
+3. 运行初始化/迁移脚本（幂等，安全重复执行）：
    `bash /workspace/group/.claude/skills/life-secretary/init-db.sh`
-5. 初始化完成后，再继续执行用户请求。
+   - 若数据库不存在：自动创建并建表。
+   - 若数据库已存在且为最新版本：输出 "up to date"，直接退出。
+   - 若数据库需要升级：自动备份旧版本，执行迁移，更新版本号。
+4. 初始化完成后，再继续执行用户请求。
 
 数据库路径固定为：`/workspace/group/life-secretary.db`。
 
@@ -269,6 +270,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 ## 维护指南
 
-- 更新技能：`cd ~/.claude/skills/life-secretary && git pull`
-- Schema 变更：更新 `schema.sql` 后执行 `bash init-db.sh`（`IF NOT EXISTS` 可安全重复执行）
+- 更新技能：`cd .claude/skills/life-secretary && git pull`，然后重新发送任意消息触发自动迁移
+- 添加迁移：在 `migrations/` 目录新增 `00N.sql`，更新 `init-db.sh` 中的 `LATEST_VERSION`
 - 新增工具：在 `SKILL.md` 增加对应章节并推送到 GitHub

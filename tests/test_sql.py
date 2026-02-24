@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-life-secretary SQL logic test suite
+life-secretary SQL logic + migration test suite
 Runs entirely via Python's built-in sqlite3 — no external dependencies.
 
 Usage:
@@ -14,6 +14,9 @@ Covers:
     Round 2 (28 checks): protect_focus, manage_flex_block,
         detect_conflicts (anchor_squeezed / sla_violation / short_gap),
         optimize_day, estimate_task_time, weekly_review full aggregation
+    Round 3 (33 checks): migration engine — fresh install, no-op,
+        v1→v2 ADD COLUMN, backup integrity, multi-step v1→v3,
+        skip already-migrated, pre-migration DB, failed migration rollback
 """
 
 import sqlite3
@@ -21,6 +24,8 @@ import json
 import uuid
 import os
 import sys
+import shutil
+import tempfile
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
@@ -64,7 +69,6 @@ def test_schema(con, schema):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     for t in ["anchors", "body_status", "events", "habit_logs", "settings", "tasks"]:
         check(f"table:{t}", t in tables)
-
     indexes = {r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")}
     for i in ["idx_body_status_date", "idx_habit_logs_anchor_date",
@@ -127,7 +131,6 @@ def test_log_body_status(con):
     row = con.execute("SELECT status FROM body_status WHERE date=?", (today(),)).fetchone()
     check("log_body_status: inserted", row is not None)
     check("log_body_status: status=green", row and row[0] == "green")
-
     print("\n=== TEST 6: log_body_status upsert ===")
     con.execute("""
         INSERT INTO body_status(date,status,notes,created_at) VALUES(?,?,?,?)
@@ -364,8 +367,7 @@ def test_sla_violation(con, aid):
         WHERE anchor_id=? AND date BETWEEN ? AND ? AND completed=1
     """, (aid, week_start, week_end)).fetchone()[0]
     min_freq = con.execute("SELECT min_frequency FROM anchors WHERE id=?", (aid,)).fetchone()[0]
-    check("sla_violation: at risk flagged", completed < min_freq,
-          f"need {min_freq}, have {completed}")
+    check("sla_violation: at risk flagged", completed < min_freq, f"need {min_freq}, have {completed}")
     for d in ["2026-02-25", "2026-02-27"]:
         con.execute("""
             INSERT OR IGNORE INTO habit_logs(anchor_id,date,completed,level,created_at)
@@ -376,8 +378,7 @@ def test_sla_violation(con, aid):
         SELECT COUNT(*) FROM habit_logs
         WHERE anchor_id=? AND date BETWEEN ? AND ? AND completed=1
     """, (aid, week_start, week_end)).fetchone()[0]
-    check("sla_violation: clears after 3 completions", completed_after >= min_freq,
-          f"{completed_after}/{min_freq}")
+    check("sla_violation: clears after 3", completed_after >= min_freq, f"{completed_after}/{min_freq}")
 
 
 def test_short_gap(con):
@@ -419,13 +420,11 @@ def test_optimize_day(con):
             VALUES(?,?,?,?,?,?,?)
         """, (tid, title, mins, pri, "pending", now(), now()))
     con.commit()
-
     day_events = con.execute("""
         SELECT title, start_time, end_time FROM events
         WHERE start_date='2026-02-26' ORDER BY start_time
     """).fetchall()
     check("optimize_day: events loaded", len(day_events) == 2, f"{len(day_events)} events")
-
     work_start = "2026-02-26T09:00:00+08:00"
     work_end   = "2026-02-26T18:30:00+08:00"
     free_slots = []
@@ -438,14 +437,12 @@ def test_optimize_day(con):
             free_slots.append((slot_start, slot_end, gap_min))
     check("optimize_day: free slots computed", len(free_slots) >= 1,
           f"{len(free_slots)} slots: {[s[2] for s in free_slots]} min")
-
     pending_tasks = con.execute("""
         SELECT title, estimated_minutes, priority FROM tasks
         WHERE status='pending' ORDER BY priority ASC, estimated_minutes DESC
     """).fetchall()
     check("optimize_day: tasks ranked by priority", pending_tasks[0][0] == "准备演讲",
           f"top task: {pending_tasks[0][0]}")
-
     scheduled = []
     remaining = [(s[0], s[1], s[2]) for s in free_slots]
     for task_title, task_mins, _ in pending_tasks:
@@ -456,8 +453,7 @@ def test_optimize_day(con):
                              timedelta(minutes=task_mins)).isoformat() + "+08:00"
                 remaining[i] = (new_start, se, gap - task_mins)
                 break
-    check("optimize_day: all 3 tasks scheduled", len(scheduled) == 3,
-          f"scheduled: {scheduled}")
+    check("optimize_day: all 3 tasks scheduled", len(scheduled) == 3, f"scheduled: {scheduled}")
     check("optimize_day: high-priority task first", scheduled[0] == "准备演讲")
 
 
@@ -479,18 +475,14 @@ def test_weekly_review_full(con, aid):
         WHERE start_date BETWEEN ? AND ? GROUP BY event_type
     """, (week_start, week_end)).fetchall()}
     check("weekly_review: event type distribution", len(type_dist) > 0, str(type_dist))
-
     habit_stats = con.execute("""
-        SELECT a.name,
-            SUM(h.completed) as done,
-            COUNT(*) as total,
-            ROUND(100.0 * SUM(h.completed) / COUNT(*), 1) as rate
+        SELECT a.name, SUM(h.completed), COUNT(*),
+            ROUND(100.0 * SUM(h.completed) / COUNT(*), 1)
         FROM habit_logs h JOIN anchors a ON h.anchor_id = a.id
         WHERE h.date BETWEEN ? AND ? GROUP BY a.id
     """, (week_start, week_end)).fetchall()
     check("weekly_review: habit completion rate", len(habit_stats) >= 1,
-          f"{habit_stats[0][0] if habit_stats else 'N/A'}: {habit_stats[0][1]}/{habit_stats[0][2]} = {habit_stats[0][3]}%" if habit_stats else "no data")
-
+          f"{habit_stats[0][0]}: {habit_stats[0][1]}/{habit_stats[0][2]} = {habit_stats[0][3]}%" if habit_stats else "no data")
     task_stats = con.execute("""
         SELECT COUNT(*),
             SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
@@ -500,13 +492,228 @@ def test_weekly_review_full(con, aid):
     """).fetchone()
     check("weekly_review: task stats query works", task_stats is not None,
           f"total={task_stats[0]}, done={task_stats[1]}, pending={task_stats[2]}, scheduled={task_stats[3]}")
-
     overdue = con.execute("""
-        SELECT title, deadline FROM tasks
+        SELECT title FROM tasks
         WHERE deadline IS NOT NULL AND deadline < ?
           AND status NOT IN ('completed','cancelled')
     """, (now(),)).fetchall()
     check("weekly_review: overdue query works", overdue is not None, f"{len(overdue)} overdue")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUND 3: Migration engine
+# ─────────────────────────────────────────────────────────────────────────────
+
+SCHEMA_TEXT = SCHEMA_PATH.read_text()
+SETTINGS_DDL = "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);"
+
+
+def _has_table(con, name):
+    return con.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()[0] > 0
+
+
+def _get_version(con):
+    if not _has_table(con, "settings"):
+        return 0
+    row = con.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _set_version(con, v):
+    if not _has_table(con, "settings"):
+        con.executescript(SETTINGS_DDL)
+    con.execute("INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('schema_version',?,datetime('now'))", (str(v),))
+    con.commit()
+
+
+def _init_db(db_path, latest_version, migrations_dir):
+    db_path = Path(db_path)
+    log = []
+    if not db_path.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(db_path)
+        con.executescript(SCHEMA_TEXT)
+        _set_version(con, latest_version)
+        con.close()
+        log.append(f"fresh_install:v{latest_version}")
+        return log
+    con = sqlite3.connect(db_path)
+    current = _get_version(con)
+    if current >= latest_version:
+        con.close()
+        log.append("up_to_date")
+        return log
+    log.append(f"needs_migration:v{current}→v{latest_version}")
+    for mig in sorted(Path(migrations_dir).glob("*.sql")):
+        mig_ver = int(mig.stem.lstrip("0") or "0")
+        if mig_ver <= current:
+            continue
+        shutil.copy2(db_path, str(db_path) + f".bak-v{current}")
+        log.append(f"backup:v{current}")
+        try:
+            con.executescript(mig.read_text())
+        except Exception as e:
+            con.close()
+            raise RuntimeError(f"Migration {mig.name} failed: {e}") from e
+        _set_version(con, mig_ver)
+        current = mig_ver
+        log.append(f"applied:{mig.name}:now_v{current}")
+    con.close()
+    log.append(f"done:v{current}")
+    return log
+
+
+def _make_env(migrations=None):
+    d = Path(tempfile.mkdtemp())
+    mig_dir = d / "migrations"
+    mig_dir.mkdir()
+    if migrations:
+        for fname, content in migrations.items():
+            (mig_dir / fname).write_text(content)
+    return d, mig_dir
+
+
+def test_migration_fresh_install():
+    print("\n=== MIGRATION TEST 1: Fresh install ===")
+    d, mig = _make_env()
+    db = d / "db.sqlite"
+    log = _init_db(db, 1, mig)
+    check("fresh: db created", db.exists())
+    check("fresh: log correct", log == ["fresh_install:v1"], str(log))
+    con = sqlite3.connect(db)
+    ver = con.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    check("fresh: version=1", ver and ver[0] == "1")
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for t in ["anchors", "body_status", "events", "habit_logs", "settings", "tasks"]:
+        check(f"fresh: table {t}", t in tables)
+    con.close()
+
+
+def test_migration_noop():
+    print("\n=== MIGRATION TEST 2: No-op ===")
+    d, mig = _make_env()
+    db = d / "db.sqlite"
+    _init_db(db, 1, mig)
+    log = _init_db(db, 1, mig)
+    check("no-op: up_to_date", log == ["up_to_date"], str(log))
+
+
+def test_migration_v1_to_v2():
+    print("\n=== MIGRATION TEST 3: v1→v2 ADD COLUMN ===")
+    d, mig = _make_env({"002.sql":
+        "BEGIN TRANSACTION;\nALTER TABLE events ADD COLUMN tags TEXT;\nALTER TABLE tasks ADD COLUMN tags TEXT;\nCOMMIT;\n"
+    })
+    db = d / "db.sqlite"
+    con = sqlite3.connect(db)
+    con.executescript(SCHEMA_TEXT)
+    _set_version(con, 1)
+    eid = uid()
+    con.execute("INSERT INTO events(id,title,start_time,end_time,start_date,event_type,local_updated_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (eid, "测试事件", "2026-02-25T10:00:00+08:00", "2026-02-25T11:00:00+08:00", "2026-02-25", "work", now(), now()))
+    con.commit(); con.close()
+    log = _init_db(db, 2, mig)
+    check("v1→v2: applied", any("002.sql" in l for l in log), str(log))
+    con = sqlite3.connect(db)
+    ver = con.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    check("v1→v2: version=2", ver and ver[0] == "2")
+    cols_e = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    cols_t = {r[1] for r in con.execute("PRAGMA table_info(tasks)")}
+    check("v1→v2: events.tags added", "tags" in cols_e)
+    check("v1→v2: tasks.tags added", "tags" in cols_t)
+    row = con.execute("SELECT title FROM events WHERE id=?", (eid,)).fetchone()
+    check("v1→v2: existing data preserved", row and row[0] == "测试事件")
+    con.close()
+    bak = str(db) + ".bak-v1"
+    check("v1→v2: backup exists", os.path.exists(bak))
+    check("v1→v2: backup non-empty", os.path.getsize(bak) > 0)
+    con_bak = sqlite3.connect(bak)
+    bak_ver = con_bak.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    check("v1→v2: backup at v1", bak_ver and bak_ver[0] == "1")
+    con_bak.close()
+
+
+def test_migration_multistep():
+    print("\n=== MIGRATION TEST 4: Multi-step v1→v2→v3 ===")
+    d, mig = _make_env({
+        "002.sql": "BEGIN TRANSACTION;\nALTER TABLE events ADD COLUMN tags TEXT;\nALTER TABLE tasks ADD COLUMN tags TEXT;\nCOMMIT;\n",
+        "003.sql": "BEGIN TRANSACTION;\nALTER TABLE events ADD COLUMN location TEXT;\nCOMMIT;\n",
+    })
+    db = d / "db.sqlite"
+    con = sqlite3.connect(db)
+    con.executescript(SCHEMA_TEXT)
+    _set_version(con, 1)
+    tid = uid()
+    con.execute("INSERT INTO tasks(id,title,priority,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (tid, "重要任务", 1, "pending", now(), now()))
+    con.commit(); con.close()
+    log = _init_db(db, 3, mig)
+    check("v1→v3: both applied",
+          any("002.sql" in l for l in log) and any("003.sql" in l for l in log), str(log))
+    con = sqlite3.connect(db)
+    ver = con.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    check("v1→v3: version=3", ver and ver[0] == "3")
+    cols = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    check("v1→v3: events.tags", "tags" in cols)
+    check("v1→v3: events.location", "location" in cols)
+    row = con.execute("SELECT title FROM tasks WHERE id=?", (tid,)).fetchone()
+    check("v1→v3: task data preserved", row and row[0] == "重要任务")
+    con.close()
+    check("v1→v3: bak-v1 exists", os.path.exists(str(db) + ".bak-v1"))
+    check("v1→v3: bak-v2 exists", os.path.exists(str(db) + ".bak-v2"))
+
+
+def test_migration_skip_migrated():
+    print("\n=== MIGRATION TEST 5: Skip already-migrated ===")
+    d, mig = _make_env({"002.sql": "BEGIN TRANSACTION;\nALTER TABLE events ADD COLUMN tags TEXT;\nCOMMIT;\n"})
+    db = d / "db.sqlite"
+    _init_db(db, 2, mig)
+    log = _init_db(db, 2, mig)
+    check("skip: up_to_date", log == ["up_to_date"], str(log))
+
+
+def test_migration_pre_migration_db():
+    print("\n=== MIGRATION TEST 6: Pre-migration DB (no settings table) ===")
+    d, mig = _make_env({"002.sql": "BEGIN TRANSACTION;\nALTER TABLE events ADD COLUMN tags TEXT;\nCOMMIT;\n"})
+    db = d / "db.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE events (id TEXT PRIMARY KEY, title TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL, start_date TEXT, event_type TEXT DEFAULT 'work', local_updated_at TEXT NOT NULL, created_at TEXT NOT NULL)")
+    old_eid = uid()
+    con.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?,?)",
+                (old_eid, "老数据", "2025-01-01T10:00:00+08:00", "2025-01-01T11:00:00+08:00", "2025-01-01", "work", now(), now()))
+    con.commit(); con.close()
+    log = _init_db(db, 2, mig)
+    check("pre-mig: ran without crash", any("applied" in l for l in log), str(log))
+    con = sqlite3.connect(db)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    check("pre-mig: tags added", "tags" in cols)
+    row = con.execute("SELECT title FROM events WHERE id=?", (old_eid,)).fetchone()
+    check("pre-mig: old data preserved", row and row[0] == "老数据")
+    ver = con.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    check("pre-mig: settings table auto-created", ver is not None, str(ver))
+    con.close()
+
+
+def test_migration_failure_rollback():
+    print("\n=== MIGRATION TEST 7: Failed migration — version not advanced ===")
+    d, mig = _make_env({"002.sql":
+        "BEGIN TRANSACTION;\nALTER TABLE events ADD COLUMN ok_col TEXT;\nTHIS IS NOT VALID SQL;\nCOMMIT;\n"
+    })
+    db = d / "db.sqlite"
+    con = sqlite3.connect(db)
+    con.executescript(SCHEMA_TEXT)
+    _set_version(con, 1)
+    con.commit(); con.close()
+    try:
+        _init_db(db, 2, mig)
+        check("bad mig: exception raised", False, "no exception")
+    except RuntimeError as e:
+        check("bad mig: exception raised", True, str(e)[:70])
+    con = sqlite3.connect(db)
+    ver = con.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
+    check("bad mig: version stays at 1", ver and ver[0] == "1", str(ver))
+    con.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -537,7 +744,7 @@ def main():
     test_weekly_review_basic(con)
     test_idempotent_reinit(con, schema, tables)
 
-    # Round 2 — needs fresh anchor
+    # Round 2
     aid2 = uid()
     con.execute("""
         INSERT INTO anchors(id,name,days_of_week,time_start,time_end,protection_level,
@@ -547,7 +754,6 @@ def main():
     """, (aid2, "健身", "[1,3,5]", "19:00", "20:00", "strict", 3,
           60, "完整60分钟", 30, "缩短30分钟", 15, "保底15分钟", 1, now(), now()))
     con.commit()
-
     test_protect_focus(con)
     test_manage_flex_block(con)
     test_anchor_squeezed(con, aid2)
@@ -556,8 +762,16 @@ def main():
     test_optimize_day(con)
     test_estimate_task_time(con)
     test_weekly_review_full(con, aid2)
-
     con.close()
+
+    # Round 3
+    test_migration_fresh_install()
+    test_migration_noop()
+    test_migration_v1_to_v2()
+    test_migration_multistep()
+    test_migration_skip_migrated()
+    test_migration_pre_migration_db()
+    test_migration_failure_rollback()
 
     print("\n" + "=" * 60)
     passed = sum(1 for r in results if r[0] == "PASS")
